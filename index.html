@@ -132,6 +132,9 @@ th { font-weight: 600; font-size: .85rem; color: var(--muted); white-space: nowr
 .master td .cell span { font-size: .66rem; }
 .master .dsep { border-right: 2px solid var(--muted); }
 .empty { color: var(--muted); font-size: .8rem; }
+td.na { background: repeating-linear-gradient(-45deg, var(--surface-2) 0 6px, var(--surface) 6px 12px); }
+details.limits summary { cursor: pointer; color: var(--muted); }
+details.limits summary b { color: var(--ink); font-weight: 600; }
 
 .seg { display: inline-flex; background: var(--surface-2); border-radius: 9px; padding: 3px; gap: 2px; flex-wrap: wrap; }
 .seg button { border: 0; background: transparent; padding: 5px 12px; border-radius: 7px; font: 500 .88rem var(--f-body); color: var(--muted); cursor: pointer; }
@@ -179,7 +182,7 @@ const LETTERS = ['أ','ب','ج','د','هـ','و','ز','ح'];
 const ALL_DAYS = ['السبت','الأحد','الاثنين','الثلاثاء','الأربعاء','الخميس'];
 const ORD = ['الأولى','الثانية','الثالثة','الرابعة','الخامسة','السادسة','السابعة','الثامنة','التاسعة','العاشرة'];
 const HUES = [205,25,280,145,50,180,340,310,235,95,0,120,260,15];
-const KEY = 'tot-timetable-v1';
+const KEY = 'tot-timetable-v2';
 const embedded = (() => { try { return window.self !== window.top; } catch (e) { return true; } })();
 const uid = () => Math.random().toString(36).slice(2, 9);
 const $ = s => document.querySelector(s);
@@ -200,18 +203,18 @@ function sample() {
     sub('re','ديانة',[2,2,2,2,2,2],180),
     sub('sp','رياضة',[2,2,2,1,1,1],340),
     sub('art','فنون',[1,1,1,0,0,0],310),
-    sub('it','معلوماتية',[1,1,1,2,2,2],235),
+    sub('it','معلوماتية',[1,1,1,2,2,1],235),
   ];
   const S = (...gs) => gs.flatMap(g => g.includes('-') ? [g] : [g + '-0', g + '-1']);
-  const T = (name, rows) => ({ id: uid(), name, max: 19, off: [], assign: rows.map(([subj, secs]) => ({ subj, secs })) });
+  const T = (name, rows, x = {}) => ({ id: uid(), name, max: 19, off: [], maxDays: 0, maxPerDay: 0, ...x, assign: rows.map(([subj, secs]) => ({ subj, secs })) });
   const teachers = [
     T('سامر', [['so', S('g7','g8','g9')]]),
     T('ليلى', [['so', S('g10','g11')]]),
-    T('نادر', [['so', S('g12')], ['re', S('g11','g12')]]),
+    T('نادر', [['so', S('g12')], ['re', S('g11','g12')]], { maxPerDay: 4 }),
     T('رنا', [['en', S('g7','g8')]]),
     T('جود', [['en', S('g9','g10')]]),
     T('خالد', [['en', S('g11','g12')]]),
-    T('هدى', [['ar', S('g7','g8-0')]]),
+    T('هدى', [['ar', S('g7','g8-0')]], { off: [5] }),
     T('وسيم', [['ar', S('g8-1','g9')]]),
     T('مها', [['ar', S('g10','g11')]]),
     T('فادي', [['ar', S('g12')], ['it', S('g12')]]),
@@ -224,15 +227,17 @@ function sample() {
     T('دانة', [['sc', S('g11','g12')]]),
     T('يوسف', [['re', S('g7','g8','g9','g10')]]),
     T('كرم', [['sp', S('g7','g8','g9','g10','g11','g12')]]),
-    T('لمى', [['art', S('g7','g8','g9')], ['it', S('g7','g8','g9')]]),
-    T('عمر', [['it', S('g10','g11')]]),
+    T('لمى', [['art', S('g7','g8','g9')], ['it', S('g7','g8','g9')]], { maxDays: 3, maxPerDay: 4 }),
+    T('عمر', [['it', S('g10','g11')]], { maxDays: 2, maxPerDay: 4 }),
   ];
-  return { school: 'مدرسين المستقبل', days: [1,2,3,4,5], periods: 7, noGaps: true, isSample: true, grades, subjects, teachers, schedule: null };
+  return { school: 'مدرسين المستقبل', days: [1,2,3,4,5], dayPeriods: { 1: 6, 2: 6, 3: 5, 4: 5, 5: 5 }, noGaps: true, isSample: true, grades, subjects, teachers, schedule: null };
 }
 
 let st;
 try { st = JSON.parse(localStorage.getItem(KEY)); } catch (e) { st = null; }
 if (!st || !st.grades) st = sample();
+if (!st.dayPeriods) st.dayPeriods = {};
+st.teachers.forEach(t => { t.maxDays = +t.maxDays || 0; t.maxPerDay = +t.maxPerDay || 0; });
 const ui = { view: 'data', mode: 'section', pick: null };
 let saveTimer;
 function save() { clearTimeout(saveTimer); saveTimer = setTimeout(() => { try { localStorage.setItem(KEY, JSON.stringify(st)); } catch (e) {} }, 200); }
@@ -265,7 +270,7 @@ function coverage() {
 function analyze() {
   const errors = [], warns = [];
   const cov = coverage(), secs = sections();
-  const D = st.days.length, cap = D * st.periods;
+  const D = st.days.length, cap = weekCap();
   if (!D) errors.push('اختار يوم دوام واحد على الأقل.');
   secs.forEach(sec => {
     let total = 0;
@@ -279,97 +284,134 @@ function analyze() {
     });
   });
   st.teachers.forEach(t => {
-    const L = teacherLoad(t), avail = st.days.filter(d => !t.off.includes(d)).length * st.periods;
-    if (L > t.max) warns.push(`الأستاذ ${t.name}: ${L} حصة، أكتر من نصابه (${t.max}).`);
-    if (L > avail) errors.push(`الأستاذ ${t.name}: ${L} حصة وما عنده غير ${avail} حصة متاحة بأيام دوامه.`);
+    const L = teacherLoad(t), avail = teacherCapacity(t);
+    if (L > t.max) warns.push(`${t.name}: ${L} حصة، أكتر من النصاب (${t.max}).`);
+    if (L > avail) errors.push(`${t.name}: ${L} حصة، وحسب الشروط الخاصة ما بيقدر يعطي أكتر من ${avail} حصة بالأسبوع.`);
   });
   return { errors, warns };
+}
+function dayP(d) { const v = st.dayPeriods[d]; return v == null ? 5 : Math.max(0, +v); }
+function maxP() { return Math.max(1, ...st.days.map(dayP)); }
+function weekCap() { return st.days.reduce((n, d) => n + dayP(d), 0); }
+function teacherCapacity(t) {
+  const per = st.days.filter(d => !t.off.includes(d)).map(d => Math.min(dayP(d), t.maxPerDay > 0 ? t.maxPerDay : 99)).sort((a, b) => b - a);
+  return per.slice(0, t.maxDays > 0 ? t.maxDays : per.length).reduce((a, b) => a + b, 0);
+}
+function limitsText(t) {
+  const x = [];
+  if (t.off.length) x.push('ما بيداوم ' + t.off.map(d => ALL_DAYS[d]).join(' و'));
+  if (t.maxDays > 0) x.push('أكتر شي ' + t.maxDays + ' أيام');
+  if (t.maxPerDay > 0) x.push('أكتر شي ' + t.maxPerDay + ' حصص باليوم');
+  return x.join('، ');
 }
 function dataSig() { const { schedule, ...rest } = st; return JSON.stringify(rest); }
 
 /* ---------- solver ---------- */
+// Slots are day * P + period, where P is the longest day; periods past a day's length are never used.
 function solve(budgetMs) {
-  const D = st.days.length, P = st.periods, S = D * P;
-  const secs = sections(), secIdx = new Map(secs.map((s, i) => [s.id, i]));
+  const D = st.days.length, PD = st.days.map(dayP), P = maxP(), S = D * P;
+  const secs = sections();
   const T = st.teachers, cov = coverage();
+  const nT = T.length;
+  const tMaxPD = T.map(t => t.maxPerDay > 0 ? t.maxPerDay : 99);
+  const tAvail = T.map(t => st.days.map((d, di) => di).filter(di => !t.off.includes(st.days[di]) && PD[di] > 0));
   const groups = [], lessons = [];
   secs.forEach((sec, si) => st.subjects.forEach(s => {
     const h = +s.hours[sec.grade.id] || 0; if (!h) return;
     const ts = cov.get(sec.id + '|' + s.id); if (!ts || ts.length !== 1) return;
     const ti = T.findIndex(t => t.id === ts[0]);
-    const availDays = st.days.filter(d => !T[ti].off.includes(d)).length || 1;
     const gi = groups.length;
-    groups.push({ si, subj: s.id, ti, h, cap: Math.ceil(h / availDays) });
+    groups.push({ si, subj: s.id, ti, h });
     for (let k = 0; k < h; k++) lessons.push({ g: gi, si, ti });
   }));
+  const tLoad = T.map(() => 0); lessons.forEach(l => tLoad[l.ti]++);
   // allowed slots per section
   const allowed = secs.map(sec => {
     let total = 0; st.subjects.forEach(s => total += +s.hours[sec.grade.id] || 0);
     const out = [];
-    if (st.noGaps && total <= S) {
-      const base = Math.floor(total / D), extra = total % D;
-      for (let d = 0; d < D; d++) { const c = base + (d < extra ? 1 : 0); for (let p = 0; p < c; p++) out.push(d * P + p); }
-    } else for (let s = 0; s < S; s++) out.push(s);
+    if (st.noGaps && total <= PD.reduce((a, b) => a + b, 0)) {
+      const c = PD.map(() => 0);
+      for (let k = 0; k < total; k++) { let bd = 0; for (let d = 1; d < D; d++) if (PD[d] - c[d] > PD[bd] - c[bd]) bd = d; c[bd]++; }
+      for (let d = 0; d < D; d++) for (let p = 0; p < c[d]; p++) out.push(d * P + p);
+    } else for (let d = 0; d < D; d++) for (let p = 0; p < PD[d]; p++) out.push(d * P + p);
     return out;
   });
-  const off = T.map(t => st.days.map(d => t.off.includes(d)));
-  const tLessons = T.map(() => 0); lessons.forEach(l => tLessons[l.ti]++);
-  const nL = lessons.length, nSec = secs.length, nT = T.length;
-  let best = null, relax = 0;
+  // teachers limited to N days: pick which days for this attempt (enough capacity for their load)
+  function pickWorkDays(ti) {
+    const t = T[ti], av = tAvail[ti];
+    if (!(t.maxDays > 0) || t.maxDays >= av.length) return av;
+    const capOf = ds => ds.reduce((n, d) => n + Math.min(PD[d], tMaxPD[ti]), 0);
+    for (let k = 0; k < 40; k++) {
+      const sh = [...av].sort(() => Math.random() - 0.5).slice(0, t.maxDays);
+      if (capOf(sh) >= tLoad[ti]) return sh;
+    }
+    return [...av].sort((a, b) => Math.min(PD[b], tMaxPD[ti]) - Math.min(PD[a], tMaxPD[ti])).slice(0, t.maxDays);
+  }
+  const nL = lessons.length, nSec = secs.length;
+  let best = null, relax = 0, attempts = 0;
   const t0 = performance.now();
-  let attempts = 0;
   const maxRelax = Math.max(1, ...groups.map(g => g.h));
   // relax = extra periods of the same subject allowed on one day; raised only when the strict rule cannot be met
   for (relax = 0; relax <= maxRelax; relax++) {
-  const phaseEnd = performance.now() + (relax === 0 ? budgetMs * 0.6 : budgetMs * 0.4 / 2);
-  let phaseAttempts = 0;
-  while (phaseAttempts === 0 || performance.now() < phaseEnd) {
-    phaseAttempts++;
-    attempts++;
-    const secOcc = new Int32Array(nSec * S).fill(-1), tOcc = new Int32Array(Math.max(1, nT) * S).fill(-1);
-    const cnt = new Int16Array(groups.length * D), slot = new Int32Array(nL).fill(-1);
-    const tabuS = new Int32Array(nL).fill(-1), tabuU = new Int32Array(nL);
-    const queue = [...Array(nL).keys()].map(i => [i, tLessons[lessons[i].ti] + groups[lessons[i].g].h * 0.3 - allowed[lessons[i].si].length * 0.05 + Math.random() * 3])
-      .sort((a, b) => a[1] - b[1]).map(x => x[0]);
-    const stuck = [];
-    const remove = L => { const s = slot[L], l = lessons[L]; secOcc[l.si * S + s] = -1; if (tOcc[l.ti * S + s] === L) tOcc[l.ti * S + s] = -1; cnt[l.g * D + Math.floor(s / P)]--; slot[L] = -1; };
-    const place = (L, s) => { const l = lessons[L]; secOcc[l.si * S + s] = L; tOcc[l.ti * S + s] = L; cnt[l.g * D + Math.floor(s / P)]++; slot[L] = s; };
-    let iter = 0; const maxIter = nL * 300 + 1000;
-    while (queue.length && iter < maxIter) {
-      iter++;
-      const L = queue.pop(), l = lessons[L], g = groups[l.g];
-      let bestS = -1, bestSc = Infinity;
-      for (const s of allowed[l.si]) {
+    const phaseEnd = performance.now() + (relax === 0 ? budgetMs * 0.6 : budgetMs * 0.2);
+    let phaseAttempts = 0;
+    while (phaseAttempts === 0 || performance.now() < phaseEnd) {
+      phaseAttempts++; attempts++;
+      const work = T.map((_, ti) => pickWorkDays(ti));
+      const off = T.map((_, ti) => { const a = new Array(D).fill(true); work[ti].forEach(d => a[d] = false); return a; });
+      const gCap = groups.map(g => Math.ceil(g.h / Math.max(1, work[g.ti].length)) + relax);
+      const secOcc = new Int32Array(nSec * S).fill(-1), tOcc = new Int32Array(Math.max(1, nT) * S).fill(-1);
+      const cnt = new Int16Array(groups.length * D), tDay = new Int16Array(Math.max(1, nT) * D), slot = new Int32Array(nL).fill(-1);
+      const tabuS = new Int32Array(nL).fill(-1), tabuU = new Int32Array(nL);
+      const queue = [...Array(nL).keys()].map(i => { const l = lessons[i]; return [i, tLoad[l.ti] + groups[l.g].h * 0.3 + (T[l.ti].maxDays > 0 || T[l.ti].maxPerDay > 0 || T[l.ti].off.length ? 8 : 0) + Math.random() * 3]; })
+        .sort((a, b) => a[1] - b[1]).map(x => x[0]);
+      const stuck = [];
+      const remove = L => { const s = slot[L], l = lessons[L], d = Math.floor(s / P); secOcc[l.si * S + s] = -1; if (tOcc[l.ti * S + s] === L) tOcc[l.ti * S + s] = -1; cnt[l.g * D + d]--; tDay[l.ti * D + d]--; slot[L] = -1; };
+      const place = (L, s) => { const l = lessons[L], d = Math.floor(s / P); secOcc[l.si * S + s] = L; tOcc[l.ti * S + s] = L; cnt[l.g * D + d]++; tDay[l.ti * D + d]++; slot[L] = s; };
+      const ok = (l, s) => {
         const d = Math.floor(s / P);
-        if (off[l.ti][d]) continue;
-        const c = cnt[l.g * D + d];
-        if (c >= g.cap + relax) continue;
-        let sc = Math.random() * 0.6 + (s % P) * 0.04;
-        const o1 = secOcc[l.si * S + s], o2 = tOcc[l.ti * S + s];
-        if (o1 >= 0) sc += 10;
-        if (o2 >= 0 && o2 !== o1) sc += 10;
-        if (c > 0) sc += 1.5;
-        if (tabuS[L] === s && tabuU[L] > iter) sc += 30;
-        if (sc < bestSc) { bestSc = sc; bestS = s; }
+        if (off[l.ti][d] || cnt[l.g * D + d] >= gCap[l.g]) return false;
+        const o2 = tOcc[l.ti * S + s];
+        return tDay[l.ti * D + d] - (o2 >= 0 ? 1 : 0) < tMaxPD[l.ti];
+      };
+      let iter = 0; const maxIter = nL * 300 + 1000;
+      let snapN = Infinity, snap = null;
+      while (queue.length && iter < maxIter) {
+        iter++;
+        const L = queue.pop(), l = lessons[L];
+        let bestS = -1, bestSc = Infinity;
+        for (const s of allowed[l.si]) {
+          if (!ok(l, s)) continue;
+          const d = Math.floor(s / P);
+          let sc = Math.random() * 0.6 + (s % P) * 0.04;
+          const o1 = secOcc[l.si * S + s], o2 = tOcc[l.ti * S + s];
+          if (o1 >= 0) sc += 10;
+          if (o2 >= 0 && o2 !== o1) sc += 10;
+          if (cnt[l.g * D + d] > 0) sc += 1.5;
+          if (tabuS[L] === s && tabuU[L] > iter) sc += 30;
+          if (sc < bestSc) { bestSc = sc; bestS = s; }
+        }
+        if (bestS < 0) { stuck.push(L); continue; }
+        if (Math.random() < 0.03) { // small random walk to escape loops
+          const cand = allowed[l.si].filter(s => ok(l, s));
+          if (cand.length) bestS = cand[Math.floor(Math.random() * cand.length)];
+        }
+        for (const o of new Set([secOcc[l.si * S + bestS], tOcc[l.ti * S + bestS]])) {
+          if (o >= 0) { remove(o); tabuS[o] = bestS; tabuU[o] = iter + 12; queue.push(o); }
+        }
+        place(L, bestS);
+        if (queue.length + stuck.length < snapN && queue.length + stuck.length < (best ? best.unplaced.length : Infinity)) { snapN = queue.length + stuck.length; snap = slot.slice(); }
       }
-      if (bestS < 0) { stuck.push(L); continue; }
-      if (Math.random() < 0.03) { // small random walk to escape loops
-        const cand = allowed[l.si].filter(s => !off[l.ti][Math.floor(s / P)] && cnt[l.g * D + Math.floor(s / P)] < g.cap + relax);
-        if (cand.length) bestS = cand[Math.floor(Math.random() * cand.length)];
-      }
-      for (const o of new Set([secOcc[l.si * S + bestS], tOcc[l.ti * S + bestS]])) {
-        if (o >= 0) { remove(o); tabuS[o] = bestS; tabuU[o] = iter + 12; queue.push(o); }
-      }
-      place(L, bestS);
+      let fin = slot;
+      if (queue.length + stuck.length > snapN && snap) fin = snap;
+      const unplaced = [...Array(nL).keys()].filter(i => fin[i] < 0);
+      if (!best || unplaced.length < best.unplaced.length) best = { slot: Array.from(fin), unplaced, relax };
+      if (!unplaced.length) break;
     }
-    const unplaced = [...queue, ...stuck];
-    if (!best || unplaced.length < best.unplaced.length) best = { slot: Array.from(slot), unplaced, relax };
-    if (!unplaced.length) break;
-  }
-  if (best && !best.unplaced.length) break;
+    if (best && !best.unplaced.length) break;
   }
   return {
-    sig: dataSig(), days: [...st.days], periods: P, attempts, relax: best ? best.relax : 0, ms: Math.round(performance.now() - t0),
+    sig: dataSig(), days: [...st.days], periods: P, dayPeriods: PD, attempts, relax: best ? best.relax : 0, ms: Math.round(performance.now() - t0),
     placed: lessons.map((l, i) => ({ sec: secs[l.si].id, subj: groups[l.g].subj, t: T[l.ti].id, slot: best ? best.slot[i] : -1 })).filter(x => x.slot >= 0),
     unplaced: best ? best.unplaced.map(i => ({ sec: secs[lessons[i].si].id, subj: groups[lessons[i].g].subj, t: T[lessons[i].ti].id })) : [],
   };
@@ -409,7 +451,7 @@ function renderData() {
       ${st.grades.map(g => `<td><input type="number" min="0" max="15" id="s-h-${s.id}-${g.id}" data-f="s:${s.id}:h:${g.id}" value="${+s.hours[g.id] || 0}"></td>`).join('')}
       <td><button class="btn sm ghost danger" data-act="delSubj" data-id="${s.id}">حذف</button></td></tr>`).join('');
   const totals = st.grades.map(g => { let n = 0; st.subjects.forEach(s => n += +s.hours[g.id] || 0); return n; });
-  const cap = st.days.length * st.periods;
+  const cap = weekCap();
 
   const teacherCards = st.teachers.map(t => {
     const rows = t.assign.map((r, ri) => {
@@ -434,9 +476,15 @@ function renderData() {
     }).join('');
     return `<div class="tcard">
       <div class="head"><input type="text" class="name" id="t-name-${t.id}" data-f="t:${t.id}:name" value="${esc(t.name)}" aria-label="اسم الأستاذ">${loadPill(t)}</div>
-      <div class="row small"><label class="inline muted">النصاب <input type="number" min="1" max="40" id="t-max-${t.id}" data-f="t:${t.id}:max" value="${t.max}"></label>
-        <span class="muted">أيام ما بيداوم فيها:</span>
-        <div class="chips">${st.days.map(d => `<button class="chip off" data-act="toggleOff" data-t="${t.id}" data-d="${d}" aria-pressed="${t.off.includes(d)}">${ALL_DAYS[d]}</button>`).join('')}</div></div>
+      <div class="row small"><label class="inline muted">النصاب <input type="number" min="1" max="40" id="t-max-${t.id}" data-f="t:${t.id}:max" value="${t.max}"></label></div>
+      <details class="limits" ${limitsText(t) ? 'open' : ''}><summary class="small">شروط خاصة${limitsText(t) ? ': <b>' + esc(limitsText(t)) + '</b>' : ' (ما في)'}</summary>
+        <div class="stack small" style="gap:8px;padding-top:8px">
+          <div class="row"><span class="muted">أيام ما بيداوم فيها:</span>
+            <div class="chips">${st.days.map(d => `<button class="chip off" data-act="toggleOff" data-t="${t.id}" data-d="${d}" aria-pressed="${t.off.includes(d)}">${ALL_DAYS[d]}</button>`).join('')}</div></div>
+          <div class="row"><label class="inline muted">أكتر شي بيداوم <input type="number" min="0" max="6" id="t-md-${t.id}" data-f="t:${t.id}:maxDays" data-rerender value="${t.maxDays || ''}" placeholder="—"> أيام</label>
+            <label class="inline muted">أكتر شي <input type="number" min="0" max="10" id="t-mp-${t.id}" data-f="t:${t.id}:maxPerDay" data-rerender value="${t.maxPerDay || ''}" placeholder="—"> حصص باليوم</label></div>
+          <div class="muted">فاضي يعني بلا حد. إذا حددت عدد أيام، البرنامج بيختار الأيام الأنسب لحاله.</div>
+        </div></details>
       ${rows}
       <div class="row"><button class="btn sm" data-act="addRow" data-t="${t.id}">+ مادة</button><span style="flex:1"></span><button class="btn sm ghost danger" data-act="delTeacher" data-t="${t.id}">احذف الأستاذ</button></div>
     </div>`;
@@ -447,8 +495,9 @@ function renderData() {
     <div class="panel"><h2>الدوام</h2>
       <div class="row"><input type="text" class="name" id="school" data-f="school" value="${esc(st.school)}" aria-label="اسم المدرسة"><span class="small muted">اسم المدرسة</span></div>
       <div><div class="small muted">أيام الدوام</div><div class="chips">${dayChips}</div></div>
-      <div class="row"><label class="inline">عدد الحصص باليوم <input type="number" min="3" max="10" id="periods" data-f="periods" data-rerender value="${st.periods}"></label>
-        <span class="pill neutral">${cap} حصة بالأسبوع لكل شعبة</span></div>
+      <div><div class="small muted">عدد الحصص بكل يوم</div>
+        <div class="row">${st.days.map(d => `<label class="inline small">${ALL_DAYS[d]} <input type="number" min="0" max="10" id="dp-${d}" data-f="dp:${d}" data-rerender value="${dayP(d)}"></label>`).join('')}</div></div>
+      <div><span class="pill neutral">${cap} حصة بالأسبوع لكل شعبة</span></div>
       <label class="inline"><input type="checkbox" id="nogaps" data-f="noGaps" data-rerender ${st.noGaps ? 'checked' : ''}> بدون فراغات للطلاب (حصص الشعبة متتالية من أول الدوام)</label>
     </div>
     <div class="panel"><div class="panel-head"><h2>الصفوف والشُّعب</h2><button class="btn sm" data-act="addGrade">+ صف</button></div>
@@ -469,7 +518,7 @@ function renderData() {
 function refreshDerived() {
   st.teachers.forEach(t => { const el = document.getElementById('load-' + t.id); if (el) el.outerHTML = loadPill(t); });
   if (ui.view === 'data') {
-    const cap = st.days.length * st.periods;
+    const cap = weekCap();
     const ths = document.querySelectorAll('.tbl-hours tfoot th.num');
     st.grades.forEach((g, i) => { let n = 0; st.subjects.forEach(s => n += +s.hours[g.id] || 0); if (ths[i]) ths[i].innerHTML = `<span class="pill ${n > cap ? 'bad' : 'neutral'}">${n} / ${cap}</span>`; });
   }
@@ -491,7 +540,7 @@ function renderLoad() {
     return `<tr><td><b>${esc(t.name)}</b></td><td>${esc(subj)}</td><td class="num">${nsec}</td>
       <td class="num">${L}</td><td class="num">${t.max}</td>
       <td><div class="bar ${L > t.max ? 'over' : ''}"><span style="width:${pct}%"></span></div></td>
-      <td>${L > t.max ? `<span class="pill bad">متجاوز بـ ${L - t.max}</span>` : L === t.max ? '<span class="pill good">كامل</span>' : `<span class="pill neutral">باقي ${t.max - L}</span>`}</td></tr>`;
+      <td>${L > t.max ? `<span class="pill bad">متجاوز بـ ${L - t.max}</span>` : L === t.max ? '<span class="pill good">كامل</span>' : `<span class="pill neutral">باقي ${t.max - L}</span>`}</td><td class="small muted">${esc(limitsText(t)) || '—'}</td></tr>`;
   }).join('');
   const usedSubj = st.subjects.filter(s => st.grades.some(g => +s.hours[g.id] > 0));
   const covRows = secs.map(sec => `<tr><th>${esc(sec.name)}</th>${usedSubj.map(s => {
@@ -510,7 +559,7 @@ function renderLoad() {
     <div class="stat"><b>${st.teachers.filter(t => teacherLoad(t) > t.max).length}</b><span>متجاوز نصابه</span></div>
   </div>${issuesBox(a)}</div>
   <div class="panel"><h2>نصاب الأساتذة</h2>
-    <div class="scroll"><table><thead><tr><th>الأستاذ</th><th>المواد</th><th>الشعب</th><th>الحصص</th><th>النصاب</th><th></th><th>الحالة</th></tr></thead><tbody>${tRows}</tbody></table></div></div>
+    <div class="scroll"><table><thead><tr><th>الأستاذ</th><th>المواد</th><th>الشعب</th><th>الحصص</th><th>النصاب</th><th></th><th>الحالة</th><th>شروط خاصة</th></tr></thead><tbody>${tRows}</tbody></table></div></div>
   <div class="panel"><h2>مين مستلم كل مادة بكل شعبة</h2>
     <div class="scroll"><table class="cover"><thead><tr><th>الشعبة</th>${usedSubj.map(s => `<th>${esc(s.name)}</th>`).join('')}</tr></thead><tbody>${covRows}</tbody></table></div></div>`;
 }
@@ -545,7 +594,7 @@ function renderTT() {
         <span class="pill neutral">${count} حصة بالأسبوع</span></div>
         <h3>برنامج ${ui.mode === 'section' ? 'شعبة' : 'الأستاذ'} ${esc(ent?.name)}</h3>
         <div class="scroll"><table class="tt" id="tt-table"><thead><tr><th>اليوم</th>${Array.from({ length: P }, (_, p) => `<th>${ORD[p] || p + 1}</th>`).join('')}</tr></thead><tbody>
-        ${sch.days.map((d, di) => `<tr><th>${ALL_DAYS[d]}</th>${Array.from({ length: P }, (_, p) => { const x = m.get(ui.pick + '@' + (di * P + p)); return `<td>${x ? cellHtml(x, ui.mode) : '<span class="empty">فراغ</span>'}</td>`; }).join('')}</tr>`).join('')}
+        ${sch.days.map((d, di) => `<tr><th>${ALL_DAYS[d]}</th>${Array.from({ length: P }, (_, p) => { if (p >= (sch.dayPeriods?.[di] ?? P)) return '<td class="na"></td>'; const x = m.get(ui.pick + '@' + (di * P + p)); return `<td>${x ? cellHtml(x, ui.mode) : '<span class="empty">فراغ</span>'}</td>`; }).join('')}</tr>`).join('')}
         </tbody></table></div>`;
     } else {
       const bySec = ui.mode === 'master';
@@ -554,7 +603,7 @@ function renderTT() {
       grid = `<div class="scroll"><table class="master" id="tt-table"><thead>
         <tr><th rowspan="2">${bySec ? 'الشعبة' : 'الأستاذ'}</th>${sch.days.map(d => `<th colspan="${P}" class="dsep">${ALL_DAYS[d]}</th>`).join('')}</tr>
         <tr>${sch.days.map(() => Array.from({ length: P }, (_, p) => `<th class="${p === 0 ? 'dsep' : ''}">${p + 1}</th>`).join('')).join('')}</tr></thead><tbody>
-        ${rowsE.map(e => `<tr><th>${esc(e.name)}</th>${Array.from({ length: D * P }, (_, s) => { const x = m.get(e.id + '@' + s); const cls = s % P === 0 ? 'dsep' : '';
+        ${rowsE.map(e => `<tr><th>${esc(e.name)}</th>${Array.from({ length: D * P }, (_, s) => { const x = m.get(e.id + '@' + s); const cls = (s % P === 0 ? 'dsep' : '') + (s % P >= (sch.dayPeriods?.[Math.floor(s / P)] ?? P) ? ' na' : '');
           if (!x) return `<td class="${cls}"></td>`;
           const sj = subjById(x.subj);
           return `<td class="${cls}"><div class="cell" style="--h:${sj?.hue ?? 0}" title="${esc(bySec ? tName(x.t) : secName(x.sec))}"><b>${esc(bySec ? sj?.name : secName(x.sec))}</b>${bySec ? `<span>${esc(tName(x.t))}</span>` : `<span>${esc(sj?.name)}</span>`}</div></td>`; }).join('')}</tr>`).join('')}
@@ -574,7 +623,7 @@ function renderTT() {
   }
   $('#v-timetable').innerHTML = `
     <div class="panel controls"><div class="panel-head"><div><h2>توليد البرنامج</h2>
-      <div class="small muted">${st.days.length} أيام × ${st.periods} حصص. ما بيكون الأستاذ بصفّين بنفس الحصة، ولا الشعبة بمادتين، وحصص المادة بتتوزع على أيام الأسبوع.</div></div>
+      <div class="small muted">${st.days.length} أيام، ${weekCap()} حصة بالأسبوع (${st.days.map(d => ALL_DAYS[d] + ' ' + dayP(d)).join('، ')}). ما بيكون الأستاذ بصفّين بنفس الحصة، ولا الشعبة بمادتين، وحصص المادة بتتوزع على أيام الأسبوع.</div></div>
       <button class="btn primary" data-act="generate" ${a.errors.length ? 'disabled' : ''}>${sch ? 'ولّد من جديد' : 'ولّد البرنامج'}</button></div>
       ${a.errors.length ? issuesBox({ errors: a.errors, warns: [] }) : ''}
       ${sch && !sch.unplaced.length && !stale ? `<div class="notice good">انوزّعت كل الحصص (${sch.placed.length} حصة) بدون أي تعارض.</div>` : ''}
@@ -595,11 +644,11 @@ function setField(key, el) {
   const p = key.split(':');
   const num = (x, lo, hi) => Math.max(lo, Math.min(hi, parseInt(x, 10) || 0));
   if (key === 'school') st.school = v;
-  else if (key === 'periods') st.periods = num(v, 1, 10);
+  else if (p[0] === 'dp') st.dayPeriods[p[1]] = num(v, 0, 10);
   else if (key === 'noGaps') st.noGaps = v;
   else if (p[0] === 'g') { const g = st.grades.find(x => x.id === p[1]); if (!g) return; if (p[2] === 'name') g.name = v; else g.sections = num(v, 1, 8); }
   else if (p[0] === 's') { const s = subjById(p[1]); if (!s) return; if (p[2] === 'name') s.name = v; else s.hours[p[3]] = num(v, 0, 15); }
-  else if (p[0] === 't') { const t = st.teachers.find(x => x.id === p[1]); if (!t) return; if (p[2] === 'name') t.name = v; else t.max = num(v, 0, 40); }
+  else if (p[0] === 't') { const t = st.teachers.find(x => x.id === p[1]); if (!t) return; if (p[2] === 'name') t.name = v; else if (p[2] === 'max') t.max = num(v, 0, 40); else t[p[2]] = num(v, 0, 10); }
   else if (p[0] === 'r') { const t = st.teachers.find(x => x.id === p[1]); const r = t?.assign[+p[2]]; if (r) { r.subj = v; r.secs = []; } }
   save();
 }
@@ -620,7 +669,7 @@ document.addEventListener('click', e => {
     case 'addSubj': { const used = st.subjects.map(s => s.hue); st.subjects.push({ id: 's' + uid(), name: 'مادة جديدة', hue: HUES.find(h => !used.includes(h)) ?? Math.floor(Math.random() * 360), hours: {} }); break; }
     case 'delSubj': st.subjects = st.subjects.filter(s => s.id !== b.dataset.id); st.teachers.forEach(t => t.assign = t.assign.filter(r => r.subj !== b.dataset.id)); break;
     case 'hue': { const s = subjById(b.dataset.id); const i = HUES.indexOf(s.hue); s.hue = HUES[(i + 1) % HUES.length]; break; }
-    case 'addTeacher': st.teachers.unshift({ id: uid(), name: 'أستاذ جديد', max: 19, off: [], assign: [{ subj: st.subjects[0]?.id, secs: [] }] }); break;
+    case 'addTeacher': st.teachers.unshift({ id: uid(), name: 'أستاذ جديد', max: 19, off: [], maxDays: 0, maxPerDay: 0, assign: [{ subj: st.subjects[0]?.id, secs: [] }] }); break;
     case 'delTeacher': st.teachers = st.teachers.filter(t => t.id !== b.dataset.t); break;
     case 'addRow': T(b.dataset.t).assign.push({ subj: st.subjects[0]?.id, secs: [] }); break;
     case 'delRow': T(b.dataset.t).assign.splice(+b.dataset.r, 1); break;

@@ -358,6 +358,8 @@ function solve(budgetMs) {
       const work = T.map((_, ti) => pickWorkDays(ti));
       const off = T.map((_, ti) => { const a = new Array(D).fill(true); work[ti].forEach(d => a[d] = false); return a; });
       const gCap = groups.map(g => Math.ceil(g.h / Math.max(1, work[g.ti].length)) + relax);
+      // subjects with few periods (≤ half the week) should not land on two consecutive days
+      const gAdj = groups.map(g => g.h <= Math.ceil(work[g.ti].length / 2) ? 4 : 0);
       const secOcc = new Int32Array(nSec * S).fill(-1), tOcc = new Int32Array(Math.max(1, nT) * S).fill(-1);
       const cnt = new Int16Array(groups.length * D), tDay = new Int16Array(Math.max(1, nT) * D), slot = new Int32Array(nL).fill(-1);
       const tabuS = new Int32Array(nL).fill(-1), tabuU = new Int32Array(nL);
@@ -386,6 +388,7 @@ function solve(budgetMs) {
           if (o1 >= 0) sc += 10;
           if (o2 >= 0 && o2 !== o1) sc += 10;
           if (cnt[l.g * D + d] > 0) sc += 1.5;
+          if (gAdj[l.g] && ((d > 0 && cnt[l.g * D + d - 1] > 0) || (d < D - 1 && cnt[l.g * D + d + 1] > 0))) sc += gAdj[l.g];
           if (tabuS[L] === s && tabuU[L] > iter) sc += 30;
           if (sc < bestSc) { bestSc = sc; bestS = s; }
         }
@@ -400,11 +403,41 @@ function solve(budgetMs) {
         place(L, bestS);
         if (queue.length + stuck.length < snapN && queue.length + stuck.length < (best ? best.unplaced.length : Infinity)) { snapN = queue.length + stuck.length; snap = slot.slice(); }
       }
+      if (!queue.length && !stuck.length) {
+        // improvement pass: swap lessons inside a section to cut same-subject consecutive days / doubled days
+        const gCost = g => { let c = 0; for (let d = 0; d < D; d++) { const v = cnt[g * D + d]; if (v > 1) c += (v - 1) * 2; if (gAdj[g] && d < D - 1 && v > 0 && cnt[g * D + d + 1] > 0) c += 1; } return c; };
+        const can = (L, s) => { const l = lessons[L], d = Math.floor(s / P); return secOcc[l.si * S + s] < 0 && tOcc[l.ti * S + s] < 0 && !off[l.ti][d] && cnt[l.g * D + d] < gCap[l.g] && tDay[l.ti * D + d] < tMaxPD[l.ti]; };
+        const tEnd = performance.now() + 250;
+        for (let pass = 0; pass < 40 && performance.now() < tEnd; pass++) {
+          let improved = false;
+          for (let L = 0; L < nL; L++) {
+            const l = lessons[L]; if (gCost(l.g) === 0) continue;
+            const s1 = slot[L], opts = allowed[l.si];
+            for (let k = 0; k < 12; k++) {
+              const s2 = opts[Math.floor(Math.random() * opts.length)];
+              if (Math.floor(s2 / P) === Math.floor(s1 / P)) continue;
+              const M = secOcc[l.si * S + s2];
+              const gs = M >= 0 ? [l.g, lessons[M].g] : [l.g];
+              if (M >= 0 && lessons[M].g === l.g) continue;
+              const before = gs.reduce((n, g) => n + gCost(g), 0);
+              remove(L); if (M >= 0) remove(M);
+              let done = false;
+              if (can(L, s2)) { place(L, s2); if (M < 0 || can(M, s1)) { if (M >= 0) place(M, s1); done = true; } else remove(L); }
+              if (done && gs.reduce((n, g) => n + gCost(g), 0) < before) { improved = true; break; }
+              if (done) { remove(L); if (M >= 0) remove(M); }
+              place(L, s1); if (M >= 0) place(M, s2);
+            }
+          }
+          if (!improved) break;
+        }
+      }
       let fin = slot;
       if (queue.length + stuck.length > snapN && snap) fin = snap;
       const unplaced = [...Array(nL).keys()].filter(i => fin[i] < 0);
-      if (!best || unplaced.length < best.unplaced.length) best = { slot: Array.from(fin), unplaced, relax };
-      if (!unplaced.length) break;
+      let quality = 0;
+      if (!unplaced.length) for (let g = 0; g < groups.length; g++) for (let d = 0; d < D; d++) { const v = cnt[g * D + d]; if (v > 1) quality += (v - 1) * 2; if (gAdj[g] && d < D - 1 && v > 0 && cnt[g * D + d + 1] > 0) quality += 1; }
+      if (!best || unplaced.length < best.unplaced.length || (!unplaced.length && quality < best.quality)) best = { slot: Array.from(fin), unplaced, relax, quality };
+      if (!unplaced.length && (quality === 0 || performance.now() > t0 + budgetMs * 0.5)) break;
     }
     if (best && !best.unplaced.length) break;
   }
@@ -621,7 +654,7 @@ function renderTT() {
   }
   $('#v-timetable').innerHTML = `
     <div class="panel controls"><div class="panel-head"><div><h2>توليد البرنامج</h2>
-      <div class="small muted">${st.days.length} أيام، ${weekCap()} حصة بالأسبوع (${st.days.map(d => ALL_DAYS[d] + ' ' + dayP(d)).join('، ')}). ما بيكون الأستاذ بصفّين بنفس الحصة، ولا الشعبة بمادتين، وحصص المادة بتتوزع على أيام الأسبوع.</div></div>
+      <div class="small muted">${st.days.length} أيام، ${weekCap()} حصة بالأسبوع (${st.days.map(d => ALL_DAYS[d] + ' ' + dayP(d)).join('، ')}). ما بيكون الأستاذ بصفّين بنفس الحصة، ولا الشعبة بمادتين، وحصص المادة بتتوزع على أيام الأسبوع، والمادة اللي حصصها قليلة ما بتجي بيومين ورا بعض.</div></div>
       <button class="btn primary" data-act="generate" ${a.errors.length ? 'disabled' : ''}>${sch ? 'ولّد من جديد' : 'ولّد البرنامج'}</button></div>
       ${a.errors.length ? issuesBox({ errors: a.errors, warns: [] }) : ''}
       ${sch && !sch.unplaced.length && !stale ? `<div class="notice good">انوزّعت كل الحصص (${sch.placed.length} حصة) بدون أي تعارض.</div>` : ''}

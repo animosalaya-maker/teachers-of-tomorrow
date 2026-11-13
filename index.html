@@ -5,6 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>مدرسين المستقبل</title>
 <meta name="claude:viewport-fit-sides" content="cover">
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#1d5c86">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon-192.png">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@400;500;600&family=Readex+Pro:wght@500;600;700&display=swap">
 <style>
 /* Layout: one working column; tabs switch between data entry, load check, and the generated timetable grids. */
@@ -526,6 +530,8 @@ function renderData() {
     <div class="panel"><h2>الدوام</h2>
       <div class="row"><input type="text" class="name" id="school" data-f="school" value="${esc(st.school)}" aria-label="اسم المدرسة"><span class="small muted">اسم المدرسة</span></div>
       <div><div class="small muted">أيام الدوام</div><div class="chips">${dayChips}</div></div>
+      <div class="row"><label class="inline">مجموع الحصص بالأسبوع <input type="number" min="1" max="60" id="weektotal" data-f="weektotal" data-rerender value="${cap}"></label>
+        <span class="small muted">بيتوزّع على الأيام لحاله، وفيك تعدّل كل يوم تحت.</span></div>
       <div><div class="small muted">عدد الحصص بكل يوم</div>
         <div class="row">${st.days.map(d => `<label class="inline small">${ALL_DAYS[d]} <input type="number" min="0" max="10" id="dp-${d}" data-f="dp:${d}" data-rerender value="${dayP(d)}"></label>`).join('')}</div></div>
       <div><span class="pill neutral">${cap} حصة بالأسبوع لكل شعبة</span></div>
@@ -676,6 +682,7 @@ function setField(key, el) {
   const num = (x, lo, hi) => Math.max(lo, Math.min(hi, parseInt(x, 10) || 0));
   if (key === 'school') st.school = v;
   else if (p[0] === 'dp') st.dayPeriods[p[1]] = num(v, 0, 10);
+  else if (key === 'weektotal') { const n = num(v, 1, 60), D = st.days.length || 1, base = Math.floor(n / D), extra = n % D; st.days.forEach((d, i) => st.dayPeriods[d] = Math.min(10, base + (i < extra ? 1 : 0))); }
   else if (key === 'noGaps') st.noGaps = v;
   else if (p[0] === 'g') { const g = st.grades.find(x => x.id === p[1]); if (!g) return; if (p[2] === 'name') g.name = v; else g.sections = num(v, 1, 8); }
   else if (p[0] === 's') { const s = subjById(p[1]); if (!s) return; if (p[2] === 'name') s.name = v; else s.hours[p[3]] = num(v, 0, 15); }
@@ -730,6 +737,7 @@ document.addEventListener('click', e => {
 function route() { const h = location.hash.slice(1); ui.view = ['data','load','timetable'].includes(h) ? h : 'data'; render(); }
 window.addEventListener('hashchange', route);
 route();
+if (!embedded && 'serviceWorker' in navigator && location.protocol === 'https:') { navigator.serviceWorker.register('sw.js').catch(() => {}); }
 </script>
 </body>
 </html>
